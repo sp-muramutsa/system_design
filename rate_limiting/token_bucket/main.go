@@ -8,15 +8,15 @@ import (
 	"time"
 )
 
-type leakyBucket struct {
+type tokenBucket struct {
     mu              sync.Mutex
     currCapacity   int64
     maxCapacity    int64
     refillRate     int64
 }
 
-func newLeakyBucket(maxCapacity int64, currCapacity int64, rate int64) *leakyBucket {
-    bucket := leakyBucket{
+func newTokenBucket(maxCapacity int64, currCapacity int64, rate int64) *tokenBucket {
+    bucket := tokenBucket{
         maxCapacity:   maxCapacity, 
         currCapacity:  currCapacity,
         refillRate:    rate,
@@ -25,7 +25,7 @@ func newLeakyBucket(maxCapacity int64, currCapacity int64, rate int64) *leakyBuc
 }
 
 
-func (b *leakyBucket) useToken() (bool, int64) {
+func (b *tokenBucket) useToken() (bool, int64) {
     b.mu.Lock()
     defer b.mu.Unlock()
     
@@ -37,20 +37,20 @@ func (b *leakyBucket) useToken() (bool, int64) {
     return true, b.currCapacity
 }
 
-func (b *leakyBucket) refillBucket() {
+func (b *tokenBucket) refillBucket() {
     b.mu.Lock()
     defer b.mu.Unlock()
     candidate := b.currCapacity + b.refillRate 
     b.currCapacity = min(candidate, b.maxCapacity)
 }
 
-type customServer struct {
-    rateLimiter *leakyBucket
+type tokenBucketServer struct {
+    rateLimiter *tokenBucket
     httpServer  *http.Server
 } 
 
-func newServer(addr string, limiter *leakyBucket) *customServer {
-    s := customServer{
+func newTokenBucketServer(addr string, limiter *tokenBucket) *tokenBucketServer {
+    s := tokenBucketServer{
         rateLimiter: limiter,
         httpServer:  &http.Server{Addr: addr},
     }
@@ -58,7 +58,7 @@ func newServer(addr string, limiter *leakyBucket) *customServer {
     return &s
 }
 
-func (s *customServer) handleRequest(w http.ResponseWriter, r *http.Request) {
+func (s *tokenBucketServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
     canHandleRequest, remainingTokens := s.rateLimiter.useToken()
     
@@ -74,9 +74,9 @@ func (s *customServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 func main() {
     
-    rateLimiter := newLeakyBucket(10000, 10000, 2000)
+    rateLimiter := newTokenBucket(10000, 10000, 2000)
     
-    s := newServer(":8080", rateLimiter)
+    s := newTokenBucketServer(":8080", rateLimiter)
     go s.httpServer.ListenAndServe()
     
     refillTicker := time.NewTicker(10 * time.Second)
