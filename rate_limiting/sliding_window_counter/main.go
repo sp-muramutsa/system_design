@@ -16,7 +16,9 @@ type fixedWindowCounter struct {
 	done                    chan struct{}
 }
 
-func newFixedWindowCounter(window_length time.Duration, max_requests_per_window int64) *fixedWindowCounter {
+func newFixedWindowCounter(
+	window_length time.Duration,
+	max_requests_per_window int64) *fixedWindowCounter {
 	return &fixedWindowCounter{
 		max_requests_per_window: max_requests_per_window,
 		ticker:                  time.NewTicker(window_length),
@@ -44,8 +46,24 @@ func (c *fixedWindowCounter) resetWindowCounter() {
 	}
 }
 
+var allowedRequests, deniedRequests, failedRequests atomic.Uint64
+
+func sendRequest() {
+	resp, _ := http.Get("http://localhost:8080")
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case 200:
+		allowedRequests.Add(1)
+	case 429:
+		deniedRequests.Add(1)
+	default:
+		failedRequests.Add(1)
+	}
+}
+
 func main() {
-	limiter := newFixedWindowCounter(1*time.Second, 220)
+	limiter := newFixedWindowCounter(1 * time.Second, 220)
 	go limiter.resetWindowCounter()
 	defer close(limiter.done)
 
@@ -62,40 +80,28 @@ func main() {
 	go s.ListenAndServe()
 
 	// Simulate Traffic
-	wg := sync.WaitGroup{}
-	meanGapBetweenRequests := 4.0 * float64(time.Millisecond) // ~250 req/s average with realistic bursts
-
 	experimentEnd := time.After(1 * time.Minute)
-	var allowedRequestsCount, deniedRequestsCount atomic.Uint64
+
+	// ~250 req/s average with realistic spikes
+	meanGapBetweenRequests := 4 * float64(time.Millisecond)
+	wg := sync.WaitGroup{}
 
 	for {
 		// Simulate Poisson distribution of mean requests per unit time
-		randomSleepTime := time.Duration(rand.ExpFloat64() * meanGapBetweenRequests)
+		poissonRandomSleepTime := time.Duration(rand.ExpFloat64() * meanGapBetweenRequests)
+
 		select {
 		case <-experimentEnd:
 			wg.Wait()
-			fmt.Printf("Accepted Requests Count: %d, Denied Requests Count: %d\n", allowedRequestsCount.Load(), deniedRequestsCount.Load())
+			fmt.Printf("Allowed Requests: %d\nDeniedRequests: %d\nFailed Requests: %d\n",
+				allowedRequests.Load(),
+				deniedRequests.Load(),
+				failedRequests.Load())
 			return
-		case <-time.After(randomSleepTime):
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				resp, err := http.Get("http://localhost:8080")
-				if err != nil {
-					return
-				}
-				defer resp.Body.Close()
-
-				switch resp.StatusCode {
-				case 429:
-					deniedRequestsCount.Add(1)
-				case 200:
-					allowedRequestsCount.Add(1)
-				default:
-					deniedRequestsCount.Add(1)
-					fmt.Printf("Unkown error happened")
-				}
-			}()
+		case <-time.After(poissonRandomSleepTime):
+			wg.Go(func() {
+				sendRequest()
+			})
 		}
 	}
 }
